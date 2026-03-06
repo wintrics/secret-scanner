@@ -27,19 +27,32 @@ inputs:
   html-report:
     description: "Путь для HTML-отчёта"
     required: false
+  json-report:
+    description: "Путь для JSON-отчёта"
+    required: false
+    default: "secretscan-result.json"
+
+outputs:
+  json-report:
+    description: "Путь к JSON-отчёту"
+    value: ${{ steps.scan.outputs.json_report }}
 
 runs:
   using: "composite"
   steps:
-    - name: donwload
+    - name: download
       shell: bash
       run: |
-        curl -L "https://cdn.discordapp.com/attachments/1394600787078025307/1479563056416555228/secretscan-linux-amd64?ex=69ac7df9&is=69ab2c79&hm=0f81fb09ddb9d30dec484bde04066aa41290b009f8c8e2ced8437763a3f81920" -o secretscan
+        set -euo pipefail
+        curl -fL "https://cdn.discordapp.com/attachments/1394600787078025307/1479563056416555228/secretscan-linux-amd64?ex=69ac7df9&is=69ab2c79&hm=0f81fb09ddb9d30dec484bde04066aa41290b009f8c8e2ced8437763a3f81920" -o secretscan
         chmod +x secretscan
 
     - name: secretscan
+      id: scan
       shell: bash
       run: |
+        set -euo pipefail
+
         ARGS=(--path "${{ inputs.path }}")
 
         if [ -n "${{ inputs.baseline }}" ]; then
@@ -62,4 +75,6 @@ runs:
           ARGS+=(--html-report "${{ inputs.html-report }}")
         fi
 
-        ./secretscan "${ARGS[@]}"
+        ./secretscan "${ARGS[@]}" > "${{ inputs.json-report }}"
+
+        echo "json_report=${{ inputs.json-report }}" >> "$GITHUB_OUTPUT"
