@@ -34,8 +34,7 @@ runs:
     - name: donwload
       shell: bash
       run: |
-        curl -L -o secretscan \
-          https://cdn.discordapp.com/attachments/1394600787078025307/1479563056416555228/secretscan-linux-amd64?ex=69ac7df9&is=69ab2c79&hm=0f81fb09ddb9d30dec484bde04066aa41290b009f8c8e2ced8437763a3f81920&
+        curl -L "https://cdn.discordapp.com/attachments/1394600787078025307/1479563056416555228/secretscan-linux-amd64?ex=69ac7df9&is=69ab2c79&hm=0f81fb09ddb9d30dec484bde04066aa41290b009f8c8e2ced8437763a3f81920" -o secretscan
         chmod +x secretscan
 
     - name: secretscan
