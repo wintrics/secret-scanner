@@ -27,6 +27,7 @@ inputs:
   html-report:
     description: "Путь для HTML-отчёта"
     required: false
+    default: "secretscan-report.html"
   json-report:
     description: "Путь для JSON-отчёта"
     required: false
@@ -47,7 +48,7 @@ inputs:
     required: false
     default: "false"
   fail-severity:
-    description: "Минимальный severity для падения: low|medium|high"
+    description: "Минимальный severity для падения: low|medium|high|critical"
     required: false
     default: "high"
   upload-artifact:
@@ -72,18 +73,33 @@ outputs:
   html-report:
     description: "Путь к HTML-отчёту"
     value: ${{ steps.scan.outputs.html_report }}
+  artifact-url:
+    description: "Ссылка на скачивание artifact с HTML-отчётом"
+    value: ${{ steps.upload_artifact.outputs.artifact-url }}
+  artifact-id:
+    description: "ID artifact с HTML-отчётом"
+    value: ${{ steps.upload_artifact.outputs.artifact-id }}
 
 runs:
   using: "composite"
   steps:
-    - name: download
+    - name: Download secretscan
       shell: bash
       run: |
         set -euo pipefail
         curl -fL "https://cdn.discordapp.com/attachments/1394600787078025307/1479563056416555228/secretscan-linux-amd64?ex=69ac7df9&is=69ab2c79&hm=0f81fb09ddb9d30dec484bde04066aa41290b009f8c8e2ced8437763a3f81920" -o secretscan
         chmod +x secretscan
 
-    - name: secretscan
+    - name: Ensure jq is installed
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v jq >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y jq
+        fi
+
+    - name: Run secretscan
       id: scan
       shell: bash
       run: |
@@ -118,13 +134,30 @@ runs:
 
         case "$fail_severity" in
           low)
-            blocking_findings_count=$(jq -r '[.results[]? | select(.severity == "low" or .severity == "medium" or .severity == "high")] | length' "${{ inputs.json-report }}")
+            blocking_findings_count=$(jq -r '[.results[]? | select(
+              .severity == "low" or
+              .severity == "medium" or
+              .severity == "high" or
+              .severity == "critical"
+            )] | length' "${{ inputs.json-report }}")
             ;;
           medium)
-            blocking_findings_count=$(jq -r '[.results[]? | select(.severity == "medium" or .severity == "high")] | length' "${{ inputs.json-report }}")
+            blocking_findings_count=$(jq -r '[.results[]? | select(
+              .severity == "medium" or
+              .severity == "high" or
+              .severity == "critical"
+            )] | length' "${{ inputs.json-report }}")
             ;;
           high)
-            blocking_findings_count=$(jq -r '[.results[]? | select(.severity == "high")] | length' "${{ inputs.json-report }}")
+            blocking_findings_count=$(jq -r '[.results[]? | select(
+              .severity == "high" or
+              .severity == "critical"
+            )] | length' "${{ inputs.json-report }}")
+            ;;
+          critical)
+            blocking_findings_count=$(jq -r '[.results[]? | select(
+              .severity == "critical"
+            )] | length' "${{ inputs.json-report }}")
             ;;
           *)
             echo "Неверное значение fail-severity: $fail_severity"
@@ -136,6 +169,15 @@ runs:
         echo "html_report=${{ inputs.html-report }}" >> "$GITHUB_OUTPUT"
         echo "findings_count=$findings_count" >> "$GITHUB_OUTPUT"
         echo "blocking_findings_count=$blocking_findings_count" >> "$GITHUB_OUTPUT"
+
+    - name: Upload HTML report artifact
+      id: upload_artifact
+      if: ${{ inputs.upload-artifact == 'true' && inputs.html-report != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.html-report }}
+        if-no-files-found: ignore
 
     - name: Comment results in PR
       if: ${{ inputs.comment-pr == 'true' && github.event_name == 'pull_request' }}
@@ -156,6 +198,10 @@ runs:
           const failOnFindings = '${{ inputs.fail-on-findings }}' === 'true'
           const failSeverity = '${{ inputs.fail-severity }}'
           const blockingFindingsCount = parseInt('${{ steps.scan.outputs.blocking_findings_count }}', 10) || 0
+
+          const artifactUrl = '${{ steps.upload_artifact.outputs.artifact-url }}'
+          const artifactId = '${{ steps.upload_artifact.outputs.artifact-id }}'
+          const artifactEnabled = '${{ inputs.upload-artifact }}' === 'true'
 
           const { owner, repo } = context.repo
           const issue_number = context.issue.number
@@ -190,26 +236,56 @@ runs:
             return `https://github.com/${repoFullName}/blob/${refSha}/${relPath}${linePart}`
           }
 
+          function escapeTable(text) {
+            return String(text ?? '')
+              .replace(/\r?\n/g, ' ')
+              .replace(/\|/g, '\\|')
+          }
+
+          function severityIcon(severity) {
+            switch (severity) {
+              case 'critical': return '🟣'
+              case 'high': return '🔴'
+              case 'medium': return '🟠'
+              case 'low': return '🟡'
+              default: return '⚪'
+            }
+          }
+
           let body = `${marker}
 
-          **Найдено:** ${findings}
-          **Блокирующих:** ${blockingFindingsCount}
-          **Порог падения:** ${failSeverity}
-          **Fail on findings:** ${failOnFindings ? 'true' : 'false'}
-
+          **Найдено:** ${findings}  
+          **Блокирующих:** ${blockingFindingsCount}  
+          **Порог падения:** ${failSeverity}  
+          **Fail on findings:** ${failOnFindings ? 'true' : 'false'}  
           `
+
+          if (artifactEnabled && artifactUrl) {
+            body += `**HTML-отчёт:** [скачать artifact](${artifactUrl})`
+            if (artifactId) {
+              body += ` (artifact id: ${artifactId})`
+            }
+            body += `\n\n`
+          } else {
+            body += `\n`
+          }
 
           if (findings === 0) {
             body += 'Подозрительных секретов не найдено.\n'
           } else {
-            body += '| Тип | Severity | Файл | Строка |\n'
-            body += '|---|---|---|---|\n'
+            body += '| Тип | Score | Severity | Файл | Строка | Fragment | Факторы |\n'
+            body += '|---|---:|---|---|---:|---|---|\n'
 
             for (const r of rows) {
               const file = toRepoRelativePath(r.file_path)
               const url = makeFileLink(r.file_path, r.line_number)
               const line = r.line_number || ''
-              body += `| ${r.secret_type} | ${r.severity} | [${file}](${url}) | ${line} |\n`
+              const score = r.score ?? ''
+              const fragment = escapeTable(r.fragment || '')
+              const factors = escapeTable((r.score_factors || []).join('; '))
+              const sev = `${severityIcon(r.severity)} ${r.severity}`
+
+              body += `| ${escapeTable(r.secret_type)} | ${score} | ${sev} | [${escapeTable(file)}](${url}) | ${line} | \`${fragment}\` | ${factors} |\n`
             }
 
             if ((result.results || []).length > rows.length) {
@@ -218,9 +294,9 @@ runs:
 
             if (failOnFindings) {
               if (blockingFindingsCount > 0) {
-                body += `\nWorkflow будет завершён с ошибкой, потому что найдено блокирующих находок: ${blockingFindingsCount}.\n`
+                body += `\n❌ Workflow будет завершён с ошибкой, потому что найдено блокирующих находок: ${blockingFindingsCount}.\n`
               } else {
-                body += `\nНайденные записи не достигают порога severity \`${failSeverity}\`.\n`
+                body += `\n✅ Найденные записи не достигают порога severity \`${failSeverity}\`.\n`
               }
             }
           }
@@ -249,14 +325,6 @@ runs:
               body
             })
           }
-
-    - name: Upload HTML report artifact
-      if: ${{ inputs.upload-artifact == 'true' && inputs.html-report != '' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.artifact-name }}
-        path: ${{ inputs.html-report }}
-        if-no-files-found: ignore
 
     - name: Fail workflow on findings
       if: ${{ inputs.fail-on-findings == 'true' }}
