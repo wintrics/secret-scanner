@@ -285,7 +285,11 @@ runs:
               const factors = escapeTable((r.score_factors || []).join('; '))
               const sev = `${severityIcon(r.severity)} ${r.severity}`
 
-              body += `| ${escapeTable(r.secret_type)} | ${score} | ${sev} | [${escapeTable(file)}](${url}) | ${line} | \`${fragment}\` | ${factors} |\n`
+              const factors = (r.score_factors || [])
+                .map(f => `• ${escapeTable(f)}`)
+                .join('<br>')
+
+              body += `| ${escapeTable(r.secret_type)} | ${score} | ${sev} | [${escapeTable(file)}](${url}) | ${line} | \`${fragment}\` | <details><summary>показать</summary>${factors}</details> |\n`
             }
 
             if ((result.results || []).length > rows.length) {
