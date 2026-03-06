@@ -273,34 +273,46 @@ runs:
           if (findings === 0) {
             body += 'Подозрительных секретов не найдено.\n'
           } else {
-            body += '| Тип | Score | Severity | Файл | Строка | Fragment | Факторы |\n'
-            body += '|---|---:|---|---|---:|---|---|\n'
-
+            body += '| Тип | Score | Severity | Файл | Строка | Fragment |\n'
+            body += '|---|---:|---|---|---:|---|\n'
+          
             for (const r of rows) {
               const file = toRepoRelativePath(r.file_path)
               const url = makeFileLink(r.file_path, r.line_number)
               const line = r.line_number || ''
               const score = r.score ?? ''
               const fragment = escapeTable(r.fragment || '')
-              const factors = escapeTable((r.score_factors || []).join('; '))
               const sev = `${severityIcon(r.severity)} ${r.severity}`
-
+          
+              body += `| ${escapeTable(r.secret_type)} | ${score} | ${sev} | [${escapeTable(file)}](${url}) | ${line} | \`${fragment}\` |\n`
+            }
+          
+            body += '\n### Факторы scoring\n\n'
+          
+            rows.forEach((r, index) => {
+              const file = toRepoRelativePath(r.file_path)
+              const url = makeFileLink(r.file_path, r.line_number)
               const factors = (r.score_factors || [])
-                .map(f => `• ${escapeTable(f)}`)
-                .join('<br>')
-
-              body += `| ${escapeTable(r.secret_type)} | ${score} | ${sev} | [${escapeTable(file)}](${url}) | ${line} | \`${fragment}\` | <details><summary>показать</summary>${factors}</details> |\n`
-            }
-
+                .map(f => `- ${escapeTable(f)}`)
+                .join('\n')
+          
+              body += `<details>\n`
+              body += `<summary><strong>${escapeTable(r.secret_type)}</strong> — <a href="${url}">${escapeTable(file)}:${r.line_number || ''}</a></summary>\n\n`
+              body += `**Score:** ${r.score ?? ''}\n\n`
+              body += `**Fragment:** \`${escapeTable(r.fragment || '')}\`\n\n`
+              body += `**Факторы:**\n${factors || '- нет'}\n\n`
+              body += `</details>\n\n`
+            })
+          
             if ((result.results || []).length > rows.length) {
-              body += `\nПоказаны первые ${rows.length} из ${(result.results || []).length}.\n`
+              body += `Показаны первые ${rows.length} из ${(result.results || []).length}.\n\n`
             }
-
+          
             if (failOnFindings) {
               if (blockingFindingsCount > 0) {
-                body += `\n❌ Workflow будет завершён с ошибкой, потому что найдено блокирующих находок: ${blockingFindingsCount}.\n`
+                body += `❌ Workflow будет завершён с ошибкой, потому что найдено блокирующих находок: ${blockingFindingsCount}.\n`
               } else {
-                body += `\n✅ Найденные записи не достигают порога severity \`${failSeverity}\`.\n`
+                body += `✅ Найденные записи не достигают порога severity \`${failSeverity}\`.\n`
               }
             }
           }
