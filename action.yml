@@ -31,11 +31,36 @@ inputs:
     description: "Путь для JSON-отчёта"
     required: false
     default: "secretscan-result.json"
+  comment-pr:
+    description: "Оставить комментарий в Pull Request"
+    required: false
+    default: "false"
+  github-token:
+    description: "GitHub token для комментария в PR"
+    required: false
+  max-results:
+    description: "Максимальное количество результатов в комментарии PR"
+    required: false
+    default: "10"
+  fail-on-findings:
+    description: "Падать, если найдены секреты"
+    required: false
+    default: "false"
+  fail-severity:
+    description: "Минимальный severity для падения: low|medium|high"
+    required: false
+    default: "high"
 
 outputs:
   json-report:
     description: "Путь к JSON-отчёту"
     value: ${{ steps.scan.outputs.json_report }}
+  findings-count:
+    description: "Общее количество находок"
+    value: ${{ steps.scan.outputs.findings_count }}
+  blocking-findings-count:
+    description: "Количество блокирующих находок"
+    value: ${{ steps.scan.outputs.blocking_findings_count }}
 
 runs:
   using: "composite"
@@ -77,4 +102,122 @@ runs:
 
         ./secretscan "${ARGS[@]}" > "${{ inputs.json-report }}"
 
+        findings_count=$(jq -r '.findings_count // 0' "${{ inputs.json-report }}")
+        fail_severity="${{ inputs.fail-severity }}"
+
+        case "$fail_severity" in
+          low)
+            blocking_findings_count=$(jq -r '[.results[]? | select(.severity == "low" or .severity == "medium" or .severity == "high")] | length' "${{ inputs.json-report }}")
+            ;;
+          medium)
+            blocking_findings_count=$(jq -r '[.results[]? | select(.severity == "medium" or .severity == "high")] | length' "${{ inputs.json-report }}")
+            ;;
+          high)
+            blocking_findings_count=$(jq -r '[.results[]? | select(.severity == "high")] | length' "${{ inputs.json-report }}")
+            ;;
+          *)
+            echo "Неверное значение fail-severity: $fail_severity"
+            exit 2
+            ;;
+        esac
+
         echo "json_report=${{ inputs.json-report }}" >> "$GITHUB_OUTPUT"
+        echo "findings_count=$findings_count" >> "$GITHUB_OUTPUT"
+        echo "blocking_findings_count=$blocking_findings_count" >> "$GITHUB_OUTPUT"
+
+    - name: Comment results in PR
+      if: ${{ inputs.comment-pr == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v8
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs')
+
+          const marker = '<!-- secretscan-report -->'
+          const reportPath = '${{ inputs.json-report }}'
+          const result = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+
+          const findings = result.findings_count || 0
+          const maxResults = parseInt('${{ inputs.max-results }}', 10) || 10
+          const rows = (result.results || []).slice(0, maxResults)
+
+          const failOnFindings = '${{ inputs.fail-on-findings }}' === 'true'
+          const failSeverity = '${{ inputs.fail-severity }}'
+          const blockingFindingsCount = parseInt('${{ steps.scan.outputs.blocking_findings_count }}', 10) || 0
+
+          let body = `${marker}
+
+          **Найдено:** ${findings}
+          **Блокирующих:** ${blockingFindingsCount}
+          **Порог падения:** ${failSeverity}
+          **Fail on findings:** ${failOnFindings ? 'true' : 'false'}
+
+          `
+
+          if (findings === 0) {
+            body += 'Подозрительных секретов не найдено.\n'
+          } else {
+            body += '| Тип | Severity | Файл | Строка |\n'
+            body += '|---|---|---|---|\n'
+
+            for (const r of rows) {
+              const file = r.file_path.replace(process.env.GITHUB_WORKSPACE + '/', '')
+              body += `| ${r.secret_type} | ${r.severity} | \`${file}\` | ${r.line_number} |\n`
+            }
+
+            if ((result.results || []).length > rows.length) {
+              body += `\nПоказаны первые ${rows.length} из ${(result.results || []).length}.\n`
+            }
+
+            if (failOnFindings) {
+              if (blockingFindingsCount > 0) {
+                body += `\nWorkflow будет завершён с ошибкой, потому что найдено блокирующих находок: ${blockingFindingsCount}.\n`
+              } else {
+                body += `\nНайденные записи не достигают порога severity \`${failSeverity}\`.\n`
+              }
+            }
+          }
+
+          const { owner, repo } = context.repo
+          const issue_number = context.issue.number
+
+          const comments = await github.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number,
+            per_page: 100
+          })
+
+          const existing = comments.data.find(c => c.body && c.body.includes(marker))
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: existing.id,
+              body
+            })
+          } else {
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body
+            })
+          }
+
+    - name: Fail workflow on findings
+      if: ${{ inputs.fail-on-findings == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        blocking="${{ steps.scan.outputs.blocking_findings_count }}"
+        threshold="${{ inputs.fail-severity }}"
+
+        if [ "${blocking}" -gt 0 ]; then
+          echo "Найдено блокирующих секретов: ${blocking} (threshold: ${threshold})"
+          exit 1
+        fi
+
+        echo "Блокирующих секретов не найдено (threshold: ${threshold})"
