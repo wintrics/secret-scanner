@@ -50,6 +50,14 @@ inputs:
     description: "Минимальный severity для падения: low|medium|high"
     required: false
     default: "high"
+  upload-artifact:
+    description: "Загружать HTML-отчёт как artifact"
+    required: false
+    default: "false"
+  artifact-name:
+    description: "Имя artifact для HTML-отчёта"
+    required: false
+    default: "secretscan-report"
 
 outputs:
   json-report:
@@ -61,6 +69,9 @@ outputs:
   blocking-findings-count:
     description: "Количество блокирующих находок"
     value: ${{ steps.scan.outputs.blocking_findings_count }}
+  html-report:
+    description: "Путь к HTML-отчёту"
+    value: ${{ steps.scan.outputs.html_report }}
 
 runs:
   using: "composite"
@@ -122,6 +133,7 @@ runs:
         esac
 
         echo "json_report=${{ inputs.json-report }}" >> "$GITHUB_OUTPUT"
+        echo "html_report=${{ inputs.html-report }}" >> "$GITHUB_OUTPUT"
         echo "findings_count=$findings_count" >> "$GITHUB_OUTPUT"
         echo "blocking_findings_count=$blocking_findings_count" >> "$GITHUB_OUTPUT"
 
@@ -145,6 +157,39 @@ runs:
           const failSeverity = '${{ inputs.fail-severity }}'
           const blockingFindingsCount = parseInt('${{ steps.scan.outputs.blocking_findings_count }}', 10) || 0
 
+          const { owner, repo } = context.repo
+          const issue_number = context.issue.number
+
+          const isPullRequest = context.eventName === 'pull_request'
+          const refSha = isPullRequest
+            ? context.payload.pull_request.head.sha
+            : context.sha
+
+          const repoFullName = isPullRequest
+            ? context.payload.pull_request.head.repo.full_name
+            : `${owner}/${repo}`
+
+          function toRepoRelativePath(absPath) {
+            const workspace = (process.env.GITHUB_WORKSPACE || '').replace(/\\/g, '/')
+            const normalized = String(absPath || '').replace(/\\/g, '/')
+
+            if (workspace && normalized.startsWith(workspace + '/')) {
+              return normalized.slice(workspace.length + 1)
+            }
+
+            return normalized
+          }
+
+          function makeFileLink(filePath, lineNumber) {
+            const relPath = toRepoRelativePath(filePath)
+              .split('/')
+              .map(encodeURIComponent)
+              .join('/')
+
+            const linePart = lineNumber ? `#L${lineNumber}` : ''
+            return `https://github.com/${repoFullName}/blob/${refSha}/${relPath}${linePart}`
+          }
+
           let body = `${marker}
 
           **Найдено:** ${findings}
@@ -161,8 +206,10 @@ runs:
             body += '|---|---|---|---|\n'
 
             for (const r of rows) {
-              const file = r.file_path.replace(process.env.GITHUB_WORKSPACE + '/', '')
-              body += `| ${r.secret_type} | ${r.severity} | \`${file}\` | ${r.line_number} |\n`
+              const file = toRepoRelativePath(r.file_path)
+              const url = makeFileLink(r.file_path, r.line_number)
+              const line = r.line_number || ''
+              body += `| ${r.secret_type} | ${r.severity} | [${file}](${url}) | ${line} |\n`
             }
 
             if ((result.results || []).length > rows.length) {
@@ -177,9 +224,6 @@ runs:
               }
             }
           }
-
-          const { owner, repo } = context.repo
-          const issue_number = context.issue.number
 
           const comments = await github.rest.issues.listComments({
             owner,
@@ -205,6 +249,14 @@ runs:
               body
             })
           }
+
+    - name: Upload HTML report artifact
+      if: ${{ inputs.upload-artifact == 'true' && inputs.html-report != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.html-report }}
+        if-no-files-found: ignore
 
     - name: Fail workflow on findings
       if: ${{ inputs.fail-on-findings == 'true' }}
