@@ -1,0 +1,66 @@
+name: "SecretScan"
+description: "Сканирование репозитория на наличие секретов"
+
+inputs:
+  path:
+    description: "Путь для сканирования"
+    required: false
+    default: "."
+  baseline:
+    description: "Путь к baseline-файлу"
+    required: false
+  diff:
+    description: "Диапазон git diff"
+    required: false
+  staged:
+    description: "Сканировать только staged-изменения"
+    required: false
+    default: "false"
+  git-history:
+    description: "Сканировать историю git"
+    required: false
+    default: "false"
+  since:
+    description: "Глубина истории"
+    required: false
+    default: "30d"
+  html-report:
+    description: "Путь для HTML-отчёта"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: donwload
+      shell: bash
+      run: |
+        curl -L -o secretscan \
+          https://cdn.discordapp.com/attachments/1394600787078025307/1479563056416555228/secretscan-linux-amd64?ex=69ac7df9&is=69ab2c79&hm=0f81fb09ddb9d30dec484bde04066aa41290b009f8c8e2ced8437763a3f81920&
+        chmod +x secretscan
+
+    - name: secretscan
+      shell: bash
+      run: |
+        ARGS=(--path "${{ inputs.path }}")
+
+        if [ -n "${{ inputs.baseline }}" ]; then
+          ARGS+=(--baseline "${{ inputs.baseline }}")
+        fi
+
+        if [ -n "${{ inputs.diff }}" ]; then
+          ARGS+=(--diff "${{ inputs.diff }}")
+        fi
+
+        if [ "${{ inputs.staged }}" = "true" ]; then
+          ARGS+=(--staged)
+        fi
+
+        if [ "${{ inputs.git-history }}" = "true" ]; then
+          ARGS+=(--git-history --since "${{ inputs.since }}")
+        fi
+
+        if [ -n "${{ inputs.html-report }}" ]; then
+          ARGS+=(--html-report "${{ inputs.html-report }}")
+        fi
+
+        ./secretscan "${ARGS[@]}"
