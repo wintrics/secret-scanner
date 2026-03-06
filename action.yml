@@ -255,9 +255,6 @@ runs:
           let body = `${marker}
 
           **Найдено:** ${findings}  
-          **Блокирующих:** ${blockingFindingsCount}  
-          **Порог падения:** ${failSeverity}  
-          **Fail on findings:** ${failOnFindings ? 'true' : 'false'}  
           `
 
           if (artifactEnabled && artifactUrl) {
@@ -310,9 +307,7 @@ runs:
           
             if (failOnFindings) {
               if (blockingFindingsCount > 0) {
-                body += `❌ Workflow будет завершён с ошибкой, потому что найдено блокирующих находок: ${blockingFindingsCount}.\n`
-              } else {
-                body += `✅ Найденные записи не достигают порога severity \`${failSeverity}\`.\n`
+                body += `❌ Workflow будет завершён с ошибкой\n`
               }
             }
           }
